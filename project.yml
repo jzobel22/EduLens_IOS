@@ -1,0 +1,35 @@
+name: EduLensStudentApp
+
+options:
+  minimumXcodeGenVersion: 2.38.0
+
+settings:
+  base:
+    SWIFT_VERSION: 5.0
+    IPHONEOS_DEPLOYMENT_TARGET: 17.0
+    # Replace this with your real Apple Developer Team ID when you're ready to sign
+    DEVELOPMENT_TEAM: ""
+    # If you want a custom display name on the home screen:
+    PRODUCT_NAME: EduLens
+
+targets:
+  EduLensStudentApp:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    info:
+      path: Info.plist
+      type: explicit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zobelsolutions.EduLensStudent
+        # If you want a different app name under the icon, override here:
+        # PRODUCT_NAME: "EduLens Student"
+    sources:
+      - path: .
+        excludes:
+          - project.yml
+          - README.md
+          - "*.zip"
+    scheme:
+      testTargets: []

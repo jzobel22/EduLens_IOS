@@ -2,11 +2,11 @@ import SwiftUI
 
 struct DashboardView: View {
     @EnvironmentObject var appState: AppState
+
     @State private var loadingToday: Bool = false
     @State private var todayError: String? = nil
     @State private var hasAppeared: Bool = false
 
-    // Brand color derived from institution branding (fallback to accentColor)
     private var brandColor: Color {
         Color(hex: appState.branding?.primary_color) ?? .accentColor
     }
@@ -26,12 +26,9 @@ struct DashboardView: View {
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
         .onAppear {
-            if !hasAppeared {
-                hasAppeared = true
-            }
-            Task {
-                await refreshIfNeeded()
-            }
+            if !hasAppeared { hasAppeared = true }
+            // MainShellView now hydrates branding/courses/weekly/today.
+            // Dashboard should be lightweight and not re-fetch unless user taps.
         }
     }
 
@@ -51,6 +48,8 @@ struct DashboardView: View {
         Group {
             if let first = appState.courses.first {
                 TermProgressCard(course: first, brandColor: brandColor)
+            } else {
+                EmptyView()
             }
         }
     }
@@ -131,6 +130,7 @@ struct DashboardView: View {
                     )
                     .foregroundColor(brandColor)
             }
+            .disabled(loadingToday || !appState.isAuthenticated)
         }
         .padding(12)
         .background(
@@ -148,7 +148,11 @@ struct DashboardView: View {
                 Spacer()
             }
 
-            if appState.courses.isEmpty {
+            if !appState.isAuthenticated {
+                Text("Please sign in to view your courses.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            } else if appState.courses.isEmpty {
                 Text("You don't have any active courses yet.")
                     .font(.footnote)
                     .foregroundColor(.secondary)
@@ -166,41 +170,20 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - Data loading
-
-    private func refreshIfNeeded() async {
-        guard let token = appState.accessToken else { return }
-        if appState.courses.isEmpty {
-            do {
-                let courses = try await StudentService.fetchMyCourses(accessToken: token)
-                let weekly = try await StudentService.fetchWeeklyReflectionStatus(accessToken: token)
-                await MainActor.run {
-                    appState.courses = courses
-                    appState.selectedCourse = courses.first
-                    appState.weeklyReflectionStatus = weekly
-                }
-            } catch {
-                // ignore for now; dashboard will just be sparse
-            }
-        }
-    }
+    // MARK: - Actions
 
     private func generateToday() async {
-        guard let token = appState.accessToken else { return }
+        guard appState.isAuthenticated else { return }
+
         loadingToday = true
         todayError = nil
+        defer { loadingToday = false }
+
         do {
-            let resp = try await StudentService.fetchTodayAllCourses(accessToken: token)
-            await MainActor.run {
-                appState.todayAllCourses = resp
-            }
+            let resp = try await StudentService.fetchTodayAllCourses()
+            appState.todayAllCourses = resp
         } catch {
-            await MainActor.run {
-                todayError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-        }
-        await MainActor.run {
-            loadingToday = false
+            todayError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 }
@@ -211,145 +194,135 @@ struct TermProgressCard: View {
     let course: Course
     let brandColor: Color
 
-    // Parse backend date strings like:
-    // "2025-08-26T00:00:00" or "2025-08-26T00:00:00Z" or "2025-08-26"
-    private func parseCourseDate(_ value: String?) -> Date? {
-        guard let value = value else { return nil }
+    private var info: (hasSchedule: Bool, currentWeek: Int?, totalWeeks: Int?, progressPct: Double) {
+        computeWeekInfo(
+            startDateStr: course.start_date,
+            endDateStr: course.end_date,
+            graceDays: course.grace_days
+        )
+    }
 
-        // Try ISO8601 first
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = iso.date(from: value) {
-            return d
+    var body: some View {
+        HStack(spacing: 16) {
+            // Ring
+            ZStack {
+                Circle()
+                    .stroke(Color(.systemGray5), lineWidth: 8)
+                Circle()
+                    .trim(from: 0, to: CGFloat((info.progressPct / 100)))
+                    .stroke(brandColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+
+                VStack {
+                    if let c = info.currentWeek, let t = info.totalWeeks {
+                        Text("Week \(c)")
+                            .font(.caption2.weight(.medium))
+                        Text("of \(t)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Week")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text("in progress")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .frame(width: 76, height: 76)
+
+            // Text
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Term progress")
+                    .font(.headline)
+                if let term = course.term {
+                    Text(term)
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+
+                if info.hasSchedule, let _ = info.currentWeek, let _ = info.totalWeeks {
+                    Text("\(Int(info.progressPct))% of the term complete")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundColor(brandColor)
+                }
+
+                Text("EduLens uses your course schedule to keep you oriented in the term timeline.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(.systemBackground))
+                .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3)
+        )
+    }
+
+    // MARK: - File-local date helpers to avoid duplicate symbols
+
+    private func computeWeekInfo(
+        startDateStr: String?,
+        endDateStr: String?,
+        graceDays: Int?
+    ) -> (hasSchedule: Bool, currentWeek: Int?, totalWeeks: Int?, progressPct: Double) {
+
+        guard let startStr = startDateStr,
+              let endStr = endDateStr,
+              let start = parseDate(startStr),
+              let end = parseDate(endStr)
+        else {
+            return (false, nil, nil, 0)
         }
 
-        // Fallback patterns
+        let grace = graceDays ?? 0
+        let cutoff = Calendar.current.date(byAdding: .day, value: grace, to: end) ?? end
+
+        let secondsPerWeek = 7.0 * 24.0 * 60.0 * 60.0
+
+        let totalWeeksRaw = cutoff.timeIntervalSince(start) / secondsPerWeek
+        let totalWeeks = max(1, Int(round(totalWeeksRaw)))
+
+        let today = Date()
+        let currentWeek: Int
+        if today < start {
+            currentWeek = 1
+        } else if today > cutoff {
+            currentWeek = totalWeeks
+        } else {
+            let elapsed = today.timeIntervalSince(start) / secondsPerWeek
+            currentWeek = min(totalWeeks, max(1, Int(floor(elapsed)) + 1))
+        }
+
+        let pct = min(100, max(0, (Double(currentWeek) / Double(totalWeeks)) * 100))
+        return (true, currentWeek, totalWeeks, pct)
+    }
+
+    private func parseDate(_ value: String) -> Date? {
+        // First ISO8601 (common backend format)
+        let iso = ISO8601DateFormatter()
+        if let d = iso.date(from: value) { return d }
+
+        // Then common fallback formats
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
 
         let formats = [
-            "yyyy-MM-dd'T'HH:mm:ssXXXXX", // e.g. 2025-08-26T00:00:00Z or with offset
-            "yyyy-MM-dd'T'HH:mm:ss",      // e.g. 2025-08-26T00:00:00
-            "yyyy-MM-dd"                  // e.g. 2025-08-26
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd"
         ]
 
-        for format in formats {
-            df.dateFormat = format
-            if let d = df.date(from: value) {
-                return d
-            }
+        for f in formats {
+            df.dateFormat = f
+            if let d = df.date(from: value) { return d }
         }
-
         return nil
     }
-
-    private var weekInfo: (current: Int?, total: Int?) {
-        guard
-            let startDate = parseCourseDate(course.start_date),
-            let endDate = parseCourseDate(course.end_date)
-        else {
-            return (nil, nil)
-        }
-
-        let today = Date()
-        let calendar = Calendar.current
-
-        // Total weeks in course
-        let totalDays = calendar.dateComponents([.day], from: startDate, to: endDate).day ?? 0
-        let totalWeeks = max(1, Int(ceil(Double(max(totalDays, 1)) / 7.0)))
-
-        // Current week (clamped to [1, totalWeeks])
-        let daysFromStart = calendar.dateComponents([.day], from: startDate, to: today).day ?? 0
-        var currentWeek = Int(floor(Double(daysFromStart) / 7.0)) + 1
-        if currentWeek < 1 { currentWeek = 1 }
-        if currentWeek > totalWeeks { currentWeek = totalWeeks }
-
-        return (currentWeek, totalWeeks)
-    }
-
-    private var progressFraction: Double {
-        guard let current = weekInfo.current, let total = weekInfo.total, total > 0 else {
-            return 0.4
-        }
-        return min(1.0, max(0.0, Double(current) / Double(total)))
-    }
-
-    private var progressPercentText: String? {
-        guard let current = weekInfo.current, let total = weekInfo.total, total > 0 else {
-            return nil
-        }
-        let pct = Int(round(100.0 * Double(current) / Double(total)))
-        return "\(pct)% of the term complete"
-    }
-    
-    private var info: (hasSchedule: Bool, currentWeek: Int?, totalWeeks: Int?, progressPct: Double) {
-            computeWeekInfo(
-                startDateStr: course.start_date,
-                endDateStr: course.end_date,
-                graceDays: course.grace_days
-            )
-        }
-
-    var body: some View {
-            HStack(spacing: 16) {
-                // Ring
-                ZStack {
-                    Circle()
-                        .stroke(Color(.systemGray5), lineWidth: 8)
-                    Circle()
-                        .trim(from: 0, to: CGFloat((info.progressPct / 100)))
-                        .stroke(brandColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-
-                    VStack {
-                        if let c = info.currentWeek, let t = info.totalWeeks {
-                            Text("Week \(c)")
-                                .font(.caption2.weight(.medium))
-                            Text("of \(t)")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("Week")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                            Text("in progress")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .frame(width: 76, height: 76)
-
-                // Text
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Term progress")
-                        .font(.headline)
-                    if let term = course.term {
-                        Text(term)
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                    }
-
-                    if info.hasSchedule, let c = info.currentWeek, let t = info.totalWeeks {
-                        Text("\(Int(info.progressPct))% of the term complete")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundColor(brandColor)
-                    }
-
-                    Text("EduLens uses your course schedule to keep you oriented in the term timeline.")
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-            }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 18)
-                    .fill(Color(.systemBackground))
-                    .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3)
-            )
-        }
-    }
+}
 
 // MARK: - Course card
 
@@ -418,8 +391,6 @@ struct CourseCard: View {
     @ViewBuilder
     private var reflectionPill: some View {
         if let status = weeklyStatus {
-            
-            // Required & not required
             if !status.require_weekly_reflection {
                 pillBackground(
                     label: "No reflection required",
@@ -427,20 +398,14 @@ struct CourseCard: View {
                     bgColor: Color(.systemGray6),
                     icon: "minus.circle"
                 )
-            }
-            
-            // Required & submitted
-            else if status.has_submitted {
+            } else if status.has_submitted {
                 pillBackground(
                     label: "Reflection submitted",
                     textColor: .white,
                     bgColor: Color.green,
                     icon: "checkmark.seal.fill"
                 )
-            }
-            
-            // Required & DUE (not submitted)
-            else {
+            } else {
                 pillBackground(
                     label: "Reflection due this week",
                     textColor: .white,
@@ -449,7 +414,6 @@ struct CourseCard: View {
                 )
             }
         } else {
-            // No weekly reflection info at all
             pillBackground(
                 label: "No weekly reflection",
                 textColor: .secondary,
@@ -483,9 +447,7 @@ struct CourseCard: View {
         )
         .foregroundColor(textColor)
     }
-
 }
-
 
 // MARK: - Notifications
 

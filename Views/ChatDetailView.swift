@@ -12,6 +12,8 @@ struct ChatDetailView: View {
     @State private var error: String? = nil
     @State private var currentSessionId: String?
 
+    @State private var didLoadTranscript: Bool = false
+
     private var brandColor: Color {
         Color(hex: appState.branding?.primary_color) ?? .accentColor
     }
@@ -42,25 +44,34 @@ struct ChatDetailView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-
             Divider()
 
-            // Messages
-            List {
-                ForEach(messages) { msg in
-                    ChatBubbleView(
-                        message: msg,
-                        brandColor: brandColor
-                    )
-                    .listRowSeparator(.hidden)
-                }
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(messages) { msg in
+                        ChatBubbleView(message: msg, brandColor: brandColor)
+                            .listRowSeparator(.hidden)
+                            .id(msg.id)
+                    }
 
-                if isSending {
-                    TypingIndicatorView(brandColor: brandColor)
-                        .listRowSeparator(.hidden)
+                    if isSending {
+                        TypingIndicatorView(brandColor: brandColor)
+                            .listRowSeparator(.hidden)
+                            .id("typing")
+                    }
+                }
+                .listStyle(.plain)
+                .onChange(of: messages.count) { _ in
+                    scrollToBottom(proxy: proxy, animated: true)
+                }
+                .onChange(of: isSending) { _ in
+                    scrollToBottom(proxy: proxy, animated: true)
+                }
+                .onAppear {
+                    // First paint scroll
+                    scrollToBottom(proxy: proxy, animated: false)
                 }
             }
-            .listStyle(.plain)
 
             if let error = error {
                 Text(error)
@@ -87,18 +98,23 @@ struct ChatDetailView: View {
                             .imageScale(.medium)
                     }
                 }
-                .disabled(inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+                .disabled(trimmedInput.isEmpty || isSending || !appState.isAuthenticated)
             }
             .padding(12)
             .background(Color(.systemBackground))
         }
         .background(Color(.systemGroupedBackground).ignoresSafeArea())
         .onAppear {
+            // Capture session id once
             currentSessionId = session?.id
-            Task {
-                await loadTranscriptIfExisting()
-            }
+
+            // Load transcript once per appearance
+            Task { await loadTranscriptIfExisting() }
         }
+    }
+
+    private var trimmedInput: String {
+        inputText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Header
@@ -138,66 +154,94 @@ struct ChatDetailView: View {
     // MARK: - Data
 
     private func loadTranscriptIfExisting() async {
-        guard let token = appState.accessToken else { return }
-        guard let sid = currentSessionId else { return }
+        guard !didLoadTranscript else { return }
+        didLoadTranscript = true
+
+        guard appState.isAuthenticated else { return }
+        guard let sid = currentSessionId, !sid.isEmpty else { return }
+
         do {
-            let resp = try await ChatService.getTranscript(sessionId: sid, accessToken: token)
-            await MainActor.run {
-                self.messages = resp.messages
-            }
+            let resp = try await ChatService.getTranscript(sessionId: sid)
+            self.messages = resp.messages
         } catch {
             // If transcript isn't available (e.g., save_content=false), just start fresh.
+            // We'll intentionally stay silent here to keep UX clean.
         }
     }
 
     private func send() async {
-        guard let token = appState.accessToken else { return }
-        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-
-        let now = ISO8601DateFormatter().string(from: Date())
-
-        let userMsg = TranscriptMessage(role: "user", content: trimmed, ts: now)
-        await MainActor.run {
-            messages.append(userMsg)
-            inputText = ""
-            isSending = true
-            error = nil
+        guard appState.isAuthenticated else {
+            self.error = "Please log in again."
+            return
         }
 
-        var payload = ChatRequestBody(
+        let text = trimmedInput
+        guard !text.isEmpty else { return }
+
+        // Optimistic append user message
+        let userTs = isoNow()
+        let userMsg = TranscriptMessage(role: "user", content: text, ts: userTs)
+
+        messages.append(userMsg)
+        inputText = ""
+        isSending = true
+        error = nil
+
+        let payload = ChatRequestBody(
             session_id: currentSessionId,
             course_id: appState.selectedCourse?.id,
             week: nil,
-            message: trimmed,
+            message: text,
             mode: "mini",
             private_mode: false
         )
 
         do {
-            let resp = try await ChatService.sendMessage(payload: payload, accessToken: token)
+            let resp = try await ChatService.sendMessage(payload: payload)
 
-            await MainActor.run {
-                currentSessionId = resp.session_id
-                let aiMsg = TranscriptMessage(role: "assistant", content: resp.reply, ts: now)
-                withAnimation(.easeIn(duration: 0.15)) {
-                    messages.append(aiMsg)
-                }
+            currentSessionId = resp.session_id
+
+            let aiTs = isoNow()
+            let aiMsg = TranscriptMessage(role: "assistant", content: resp.reply, ts: aiTs)
+            withAnimation(.easeIn(duration: 0.15)) {
+                messages.append(aiMsg)
             }
 
             // Refresh sessions list so Web + iOS stay in sync.
-            let sessions = try await ChatService.listChatSessions(accessToken: token)
-            await MainActor.run {
-                appState.chatSessions = sessions
-            }
+            let sessions = try await ChatService.listChatSessions(limit: 50)
+            appState.chatSessions = sessions
         } catch {
-            await MainActor.run {
-                self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
+            // If send fails, keep the user's message but show the error.
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
 
-        await MainActor.run {
-            isSending = false
+        isSending = false
+    }
+
+    private func isoNow() -> String {
+        ISO8601DateFormatter().string(from: Date())
+    }
+
+    private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool) {
+        // Prefer typing indicator if present
+        if isSending {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo("typing", anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo("typing", anchor: .bottom)
+            }
+            return
+        }
+
+        guard let lastId = messages.last?.id else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(lastId, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(lastId, anchor: .bottom)
         }
     }
 }
@@ -208,9 +252,7 @@ struct ChatBubbleView: View {
     let message: TranscriptMessage
     let brandColor: Color
 
-    private var isUser: Bool {
-        message.role == "user"
-    }
+    private var isUser: Bool { message.role == "user" }
 
     var body: some View {
         HStack {
@@ -226,9 +268,11 @@ struct ChatBubbleView: View {
                 RoundedRectangle(cornerRadius: 18)
                     .fill(isUser ? brandColor : Color(.secondarySystemBackground))
             )
-            .shadow(color: Color.black.opacity(isUser ? 0.10 : 0.04),
-                    radius: isUser ? 4 : 2,
-                    x: 0, y: isUser ? 2 : 1)
+            .shadow(
+                color: Color.black.opacity(isUser ? 0.10 : 0.04),
+                radius: isUser ? 4 : 2,
+                x: 0, y: isUser ? 2 : 1
+            )
 
             if !isUser { Spacer() }
         }
@@ -240,7 +284,6 @@ struct ChatBubbleView: View {
 
 struct TypingIndicatorView: View {
     let brandColor: Color
-
     @State private var phase: CGFloat = 0
 
     var body: some View {
@@ -263,7 +306,7 @@ struct TypingIndicatorView: View {
         }
         .padding(.vertical, 4)
         .onAppear {
-            withAnimation(Animation.linear(duration: 0.9).repeatForever(autoreverses: true)) {
+            withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: true)) {
                 phase = 1
             }
         }

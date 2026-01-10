@@ -25,6 +25,9 @@
 		A250D3716D8783F7AA7E2A9B /* ChatDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDD1EB6A99D60E0AC9512880 /* ChatDetailView.swift */; };
 		B2CF0FC1B181E2711E3B5637 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA52EA1D55433AAEF46C6B55 /* AuthService.swift */; };
 		B6E3A308793931381DF3FEDD /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55E7BA718DEEF9E728748C6F /* APIClient.swift */; };
+		C64EFA912F11F7BC0029F710 /* LiveClassModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C64EFA902F11F7B50029F710 /* LiveClassModels.swift */; };
+		C64EFA932F11F7DF0029F710 /* LiveClassService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C64EFA922F11F7DA0029F710 /* LiveClassService.swift */; };
+		C64EFA952F11F7F10029F710 /* LiveClassView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C64EFA942F11F7EC0029F710 /* LiveClassView.swift */; };
 		C68ED7272EDB7685008A5F39 /* CoursePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68ED7262EDB7681008A5F39 /* CoursePickerView.swift */; };
 		C68ED72B2EDB9A21008A5F39 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C68ED7292EDB97B5008A5F39 /* Assets.xcassets */; };
 		C68ED72D2EDBBE9D008A5F39 /* RenameSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68ED72C2EDBBE98008A5F39 /* RenameSessionView.swift */; };
@@ -50,6 +53,9 @@
 		8FED089837B21B6F54311312 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B2C4A41AE6CF71B7E3E051D3 /* ReflectionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReflectionsView.swift; sourceTree = "<group>"; };
 		BDD1EB6A99D60E0AC9512880 /* ChatDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDetailView.swift; sourceTree = "<group>"; };
+		C64EFA902F11F7B50029F710 /* LiveClassModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveClassModels.swift; sourceTree = "<group>"; };
+		C64EFA922F11F7DA0029F710 /* LiveClassService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveClassService.swift; sourceTree = "<group>"; };
+		C64EFA942F11F7EC0029F710 /* LiveClassView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveClassView.swift; sourceTree = "<group>"; };
 		C68ED7262EDB7681008A5F39 /* CoursePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoursePickerView.swift; sourceTree = "<group>"; };
 		C68ED7282EDB9505008A5F39 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		C68ED7292EDB97B5008A5F39 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -81,6 +87,7 @@
 				55E7BA718DEEF9E728748C6F /* APIClient.swift */,
 				EA52EA1D55433AAEF46C6B55 /* AuthService.swift */,
 				4C606D4CB9A12FB7D73FF90B /* ChatService.swift */,
+				C64EFA922F11F7DA0029F710 /* LiveClassService.swift */,
 				3A77FAC4DA76F27FBD399E13 /* StudentService.swift */,
 			);
 			path = Services;
@@ -92,6 +99,7 @@
 				C68ED72E2EDC9AC3008A5F39 /* Assignments.swift */,
 				FD76EBE7E4963476AF54FE08 /* ChatModels.swift */,
 				8A5F5DD7439CC2CC27A969D9 /* Course.swift */,
+				C64EFA902F11F7B50029F710 /* LiveClassModels.swift */,
 				6093777263969F04F84B7DC3 /* StudentModels.swift */,
 			);
 			path = Models;
@@ -137,6 +145,7 @@
 				C68ED7262EDB7681008A5F39 /* CoursePickerView.swift */,
 				772F01A785C90C2B28357DB7 /* DashboardView.swift */,
 				F999E876E6888361EA68460C /* EduLensStudentApp.swift */,
+				C64EFA942F11F7EC0029F710 /* LiveClassView.swift */,
 				58906ABEE31D2410D941DE69 /* LoginView.swift */,
 				C68ED7282EDB9505008A5F39 /* LaunchScreen.storyboard */,
 				FB0FA7615BA8F19EA697B3E3 /* MainShellView.swift */,
@@ -215,9 +224,11 @@
 			files = (
 				B6E3A308793931381DF3FEDD /* APIClient.swift in Sources */,
 				D9E79F782AB0381EBF243EFF /* AppState.swift in Sources */,
+				C64EFA952F11F7F10029F710 /* LiveClassView.swift in Sources */,
 				E7CA2EA16E35CB10EEC16F8A /* AssignmentsView.swift in Sources */,
 				B2CF0FC1B181E2711E3B5637 /* AuthService.swift in Sources */,
 				935D96332A5B9554769374AB /* CalendarView.swift in Sources */,
+				C64EFA912F11F7BC0029F710 /* LiveClassModels.swift in Sources */,
 				A250D3716D8783F7AA7E2A9B /* ChatDetailView.swift in Sources */,
 				4BADD014F843459A51813F30 /* ChatModels.swift in Sources */,
 				740B4AAE9BA2C58007189C2D /* ChatService.swift in Sources */,
@@ -230,6 +241,7 @@
 				046412713F2E3B3CA4AAD04F /* LoginView.swift in Sources */,
 				916E13C9300F06B2512A2799 /* MainShellView.swift in Sources */,
 				C68ED72F2EDC9AC7008A5F39 /* Assignments.swift in Sources */,
+				C64EFA932F11F7DF0029F710 /* LiveClassService.swift in Sources */,
 				C68ED72D2EDBBE9D008A5F39 /* RenameSessionView.swift in Sources */,
 				90EC7A971EA9DD6EE9579AA0 /* ProfileView.swift in Sources */,
 				1DA3E83290C6A82518A75BC0 /* ReflectionsView.swift in Sources */,

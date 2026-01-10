@@ -36,8 +36,11 @@ struct AssignmentsView: View {
             }
             .navigationTitle("Assignments")
         }
-        .onAppear {
-            Task { await loadIfNeeded() }
+        .task {
+            await loadAssignments(force: false)
+        }
+        .onChange(of: appState.selectedCourse?.id) { _ in
+            Task { await loadAssignments(force: true) }
         }
         .sheet(isPresented: $showPlanSheet) {
             AssignmentPlanSheet(
@@ -65,7 +68,11 @@ struct AssignmentsView: View {
                 }
             }
 
-            if isLoading {
+            if !appState.isAuthenticated {
+                Text("Please sign in to view assignments.")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            } else if isLoading {
                 HStack {
                     ProgressView()
                     Text("Loading assignments from your LMS…")
@@ -86,13 +93,14 @@ struct AssignmentsView: View {
                         AssignmentRow(
                             assignment: a,
                             brandColor: brandColor,
-                            onPlan: {
-                                Task { await plan(for: a) }
-                            }
+                            onPlan: { Task { await plan(for: a) } }
                         )
                     }
                 }
                 .listStyle(.insetGrouped)
+                .refreshable {
+                    await loadAssignments(force: true)
+                }
             }
 
             Spacer()
@@ -102,60 +110,72 @@ struct AssignmentsView: View {
 
     // MARK: - Data loading
 
-    private func loadIfNeeded() async {
-        guard let token = appState.accessToken else { return }
+    private func loadAssignments(force: Bool) async {
+        guard appState.isAuthenticated else { return }
         guard let course = appState.selectedCourse else { return }
+
+        if !force, !assignments.isEmpty { return }
 
         isLoading = true
         loadError = nil
+        defer { isLoading = false }
+
         do {
-            let resp = try await StudentService.fetchAssignments(
-                courseId: course.id,
-                accessToken: token
-            )
-            await MainActor.run {
-                assignments = resp.assignments
+            // Uses APIClient token hooks now; no token param required.
+            let resp = try await StudentService.fetchAssignments(courseId: course.id)
+            assignments = resp.assignments
+        } catch let apiErr as APIError {
+            // Give a much clearer message for 404/403 since this is likely backend alignment.
+            switch apiErr {
+            case .httpError(let status, _, _):
+                if status == 404 || status == 403 {
+                    loadError = "Assignments aren’t enabled for students yet for this course.\n\n(Backend returned \(status). Once the student assignments endpoint is enabled, this screen will populate automatically.)"
+                } else if status == 401 {
+                    loadError = "Session expired. Please sign in again."
+                } else {
+                    loadError = apiErr.localizedDescription
+                }
+            default:
+                loadError = apiErr.localizedDescription
             }
         } catch {
-            await MainActor.run {
-                loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-        }
-        await MainActor.run {
-            isLoading = false
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     private func plan(for assignment: StudentLMSAssignment) async {
-        guard let token = appState.accessToken,
-              let course = appState.selectedCourse else { return }
+        guard appState.isAuthenticated, let course = appState.selectedCourse else { return }
 
-        await MainActor.run {
-            selectedAssignment = assignment
-            planText = nil
-            planError = nil
-            isPlanning = true
-            showPlanSheet = true   // show sheet AFTER assignment is set
-        }
+        selectedAssignment = assignment
+        planText = nil
+        planError = nil
+        isPlanning = true
+        showPlanSheet = true
 
         do {
             let res = try await StudentService.generateAssignmentPlan(
                 courseId: course.id,
-                assignmentId: assignment.id,
-                accessToken: token
+                assignmentId: assignment.id
             )
-            await MainActor.run {
-                planText = res.plan_markdown
+            planText = res.plan_markdown
+        } catch let apiErr as APIError {
+            switch apiErr {
+            case .httpError(let status, _, _):
+                if status == 404 || status == 403 {
+                    planError = "Study plan generation isn’t enabled for students yet.\n\n(Backend returned \(status).)"
+                } else if status == 401 {
+                    planError = "Session expired. Please sign in again."
+                } else {
+                    planError = apiErr.localizedDescription
+                }
+            default:
+                planError = apiErr.localizedDescription
             }
         } catch {
-            await MainActor.run {
-                planError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
+            planError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
 
-        await MainActor.run {
-            isPlanning = false
-        }
+        isPlanning = false
     }
 }
 
@@ -168,7 +188,7 @@ struct AssignmentRow: View {
 
     private var dueText: String {
         guard let dueStr = assignment.due_at,
-              let date = parseCourseDate(dueStr) else {
+              let date = parseDate(dueStr) else {
             return "No due date"
         }
         let df = DateFormatter()
@@ -213,6 +233,25 @@ struct AssignmentRow: View {
             .padding(.top, 4)
         }
         .padding(.vertical, 4)
+    }
+
+    // File-local date parsing (avoids reliance on global helpers)
+    private func parseDate(_ value: String) -> Date? {
+        let iso = ISO8601DateFormatter()
+        if let d = iso.date(from: value) { return d }
+
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        let formats = [
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd"
+        ]
+        for f in formats {
+            df.dateFormat = f
+            if let d = df.date(from: value) { return d }
+        }
+        return nil
     }
 }
 

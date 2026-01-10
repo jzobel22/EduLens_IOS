@@ -5,68 +5,120 @@ struct SideMenuView: View {
     @Binding var selected: MainSection
     @Binding var showMenu: Bool
 
+    @State private var isLoggingOut: Bool = false
+
+    private var brandColor: Color {
+        Color(hex: appState.branding?.primary_color) ?? .accentColor
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("EduLens")
-                    .font(.title3.bold())
-                if let name = appState.branding?.school_name {
-                    Text(name)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 24)
-            .padding(.bottom, 16)
+            header
 
             Divider()
 
-            ForEach(MainSection.allCases) { section in
-                Button {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        selected = section
-                        showMenu = false
+            VStack(spacing: 6) {
+                ForEach(MainSection.allCases) { section in
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            selected = section
+                            showMenu = false
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: section.systemImage)
+                                .imageScale(.medium)
+                                .foregroundColor(selected == section ? brandColor : .secondary)
+
+                            Text(section.label)
+                                .font(.subheadline.weight(selected == section ? .semibold : .regular))
+                                .foregroundColor(.primary)
+
+                            Spacer()
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(selected == section ? brandColor.opacity(0.10) : Color.clear)
+                        )
                     }
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: section.systemImage)
-                            .imageScale(.medium)
-                        Text(section.label)
-                            .font(.subheadline)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .buttonStyle(.plain)
+                    .disabled(!appState.isAuthenticated) // optional safety
+                    .opacity(appState.isAuthenticated ? 1.0 : 0.6)
                 }
-                .foregroundColor(selected == section ? .accentColor : .primary)
             }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
 
             Spacer()
 
+            Divider()
+
+            // MARK: - Sign out
             Button {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    appState.reset()
-                }
+                Task { await logout() }
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "rectangle.portrait.and.arrow.right")
                         .imageScale(.medium)
-                    Text("Sign out")
+
+                    Text(isLoggingOut ? "Signing out…" : "Sign out")
                         .font(.subheadline)
+
                     Spacer()
+
+                    if isLoggingOut {
+                        ProgressView()
+                            .scaleEffect(0.85)
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
+            .buttonStyle(.plain)
             .foregroundColor(.red)
+            .disabled(isLoggingOut)
 
-            Spacer().frame(height: 20)
+            Spacer().frame(height: 16)
         }
         .frame(maxHeight: .infinity)
-        .background(
-            Color(.systemBackground)
-                .shadow(radius: 8)
-        )
+        .background(Color(.systemBackground))
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("EduLens")
+                .font(.title3.bold())
+
+            if let name = appState.branding?.school_name, !name.isEmpty {
+                Text(name)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else {
+                Text("Student app")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 24)
+        .padding(.bottom, 14)
+    }
+
+    private func logout() async {
+        guard !isLoggingOut else { return }
+        isLoggingOut = true
+        defer { isLoggingOut = false }
+
+        // Close the menu immediately for cleaner UX
+        await MainActor.run {
+            withAnimation(.easeOut(duration: 0.2)) {
+                showMenu = false
+            }
+        }
+
+        // Proper logout clears Keychain + state
+        await AuthService.logout(appState: appState)
     }
 }

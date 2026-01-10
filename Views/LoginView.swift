@@ -2,14 +2,15 @@ import SwiftUI
 
 struct LoginView: View {
     @EnvironmentObject var appState: AppState
+
     @State private var email: String = ""
+    @State private var pilotKey: String = ""   // NEW
     @State private var isSubmitting: Bool = false
     @State private var error: String? = nil
     @State private var showSSOComingSoon: Bool = false
 
     var body: some View {
         ZStack {
-            // Full-screen background
             Color(.systemBackground)
                 .ignoresSafeArea()
 
@@ -17,57 +18,63 @@ struct LoginView: View {
                 VStack(spacing: 24) {
                     Spacer().frame(height: 80)
 
-                    // MARK: - Brand block (logo + subtitle only)
                     VStack(spacing: 12) {
                         Image("EduLensLogo")
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 120, height: 120)   // larger, carries the brand
-                            .shadow(color: Color.black.opacity(0.05),
-                                    radius: 8, x: 0, y: 4)
+                            .frame(width: 120, height: 120)
+                            .shadow(color: Color.black.opacity(0.05), radius: 8, x: 0, y: 4)
 
                         Text("Student AI Companion")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
 
-                    // MARK: - Email login block
+                    // Email + Pilot password
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Sign in with your .edu email")
+                        Text("Sign in for the pilot")
                             .font(.subheadline.weight(.medium))
 
                         TextField("student@university.edu", text: $email)
                             .textContentType(.emailAddress)
                             .keyboardType(.emailAddress)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled(true)
                             .padding(12)
                             .background(
                                 RoundedRectangle(cornerRadius: 12)
                                     .fill(Color(.secondarySystemBackground))
                             )
+
+                        SecureField("Pilot password", text: $pilotKey)
+                            .textContentType(.password)
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color(.secondarySystemBackground))
+                            )
+
+                        Text("Ask your instructor for the pilot password.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 24)
 
-                    // MARK: - Error message
-                    if let error = error {
+                    if let error = error, !error.isEmpty {
                         Text(error)
                             .font(.footnote)
                             .foregroundColor(.red)
                             .padding(.horizontal, 24)
+                            .multilineTextAlignment(.leading)
                     }
 
-                    // MARK: - Primary CTA
                     Button {
                         Task { await submit() }
                     } label: {
-                        HStack {
-                            if isSubmitting {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle())
-                            }
-                            Text("Continue as Student")
+                        HStack(spacing: 10) {
+                            if isSubmitting { ProgressView().progressViewStyle(.circular) }
+                            Text("Continue")
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -81,10 +88,7 @@ struct LoginView: View {
                     .padding(.horizontal, 24)
                     .disabled(!canSubmit || isSubmitting)
 
-                    // MARK: - SSO (future)
-                    Button {
-                        showSSOComingSoon = true
-                    } label: {
+                    Button { showSSOComingSoon = true } label: {
                         HStack {
                             Image(systemName: "person.crop.circle.badge.key")
                                 .imageScale(.medium)
@@ -103,7 +107,6 @@ struct LoginView: View {
 
                     Spacer().frame(height: 40)
 
-                    // MARK: - Footer
                     Text("For pilot/demo use only")
                         .font(.footnote)
                         .foregroundColor(.secondary)
@@ -117,62 +120,66 @@ struct LoginView: View {
         .alert("SSO sign-in coming soon", isPresented: $showSSOComingSoon) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("For the RIT pilot we’ll support direct SSO sign-in here. For now, use your .edu email above to continue.")
+            Text("For the RIT pilot we’ll support direct SSO sign-in here. For now, use your pilot credentials above to continue.")
+        }
+        .task {
+            await bootstrapIfAlreadyAuthenticated()
         }
     }
 
-    // MARK: - Helpers
-
     private var canSubmit: Bool {
-        !email.trimmed.isEmpty
+        !email.trimmed.isEmpty && !pilotKey.trimmed.isEmpty
     }
 
     private func submit() async {
         error = nil
         isSubmitting = true
+        defer { isSubmitting = false }
+
         do {
-            let trimmed = email.trimmed
-            let tokens = try await AuthService.devLogin(email: trimmed)
-            await MainActor.run {
-                appState.accessToken = tokens.access_token
-                appState.refreshToken = tokens.refresh_token
-                appState.role = tokens.role
-                appState.userId = tokens.user_id
-                appState.email = trimmed
-            }
-            // Prefetch branding + courses
+            let trimmedEmail = email.trimmed
+            let trimmedKey = pilotKey.trimmed
+
+            try await AuthService.devLoginAndStoreSession(
+                appState: appState,
+                email: trimmedEmail,
+                role: "student",
+                secret: trimmedKey,
+                validateMe: true
+            )
+
             try await loadInitialStudentContext()
         } catch {
-            await MainActor.run {
-                self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-        }
-        await MainActor.run {
-            isSubmitting = false
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
+    private func bootstrapIfAlreadyAuthenticated() async {
+        guard appState.isAuthenticated else { return }
+        await appState.validateSessionWithMe()
+        guard appState.isAuthenticated else { return }
+        do { try await loadInitialStudentContext() } catch { /* ignore */ }
+    }
+
     private func loadInitialStudentContext() async throws {
-        guard let token = appState.accessToken else { return }
-        async let branding = StudentService.fetchBranding(accessToken: token)
-        async let courses = StudentService.fetchMyCourses(accessToken: token)
-        async let weekly = StudentService.fetchWeeklyReflectionStatus(accessToken: token)
+        // You can eventually remove explicit tokens from StudentService calls,
+        // but leaving this as-is is fine since StudentService has overloads.
+        async let branding = StudentService.fetchBranding()
+        async let courses = StudentService.fetchMyCourses()
+        async let weekly = StudentService.fetchWeeklyReflectionStatus()
 
         do {
             let (b, c, w) = try await (branding, courses, weekly)
-            await MainActor.run {
-                appState.branding = b
-                appState.courses = c
-                appState.selectedCourse = c.first
-                appState.weeklyReflectionStatus = w
-            }
+            appState.branding = b
+            appState.courses = c
+            appState.selectedCourse = appState.selectedCourse ?? c.first
+            appState.weeklyReflectionStatus = w
         } catch {
-            // Non-fatal; user is logged in but missing some data
+            // Non-fatal
         }
     }
 }
 
-// Small helper
 private extension String {
     var trimmed: String {
         trimmingCharacters(in: .whitespacesAndNewlines)

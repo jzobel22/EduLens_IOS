@@ -2,8 +2,10 @@ import SwiftUI
 
 struct ChatSessionsView: View {
     @EnvironmentObject var appState: AppState
+
     @State private var isLoading: Bool = false
     @State private var error: String? = nil
+
     @State private var selectedSession: ChatSessionSummary? = nil
     @State private var showingDetail: Bool = false
     @State private var sessionToRename: ChatSessionSummary? = nil
@@ -15,7 +17,7 @@ struct ChatSessionsView: View {
     var body: some View {
         NavigationStack {
             List {
-                // Modern New chat card
+                // MARK: - New chat card
                 Section {
                     Button {
                         startNewChat()
@@ -56,16 +58,21 @@ struct ChatSessionsView: View {
                     .buttonStyle(.plain)
                 }
 
+                // MARK: - State blocks
                 if appState.selectedCourse == nil {
                     Section {
                         Text("Select a course on the dashboard to view its conversations.")
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     }
-                } else if isLoading {
+                } else if !appState.isAuthenticated {
                     Section {
-                        ProgressView()
+                        Text("Please sign in to view your conversations.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
                     }
+                } else if isLoading {
+                    Section { ProgressView() }
                 } else if let error = error {
                     Section {
                         Text(error)
@@ -100,8 +107,12 @@ struct ChatSessionsView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Chat")
-            .onAppear {
-                Task { await reloadSessions() }
+            .task {
+                // Load once on first appearance
+                await reloadSessions()
+            }
+            .refreshable {
+                await reloadSessions(force: true)
             }
             .sheet(isPresented: $showingDetail) {
                 ChatDetailView(session: selectedSession)
@@ -121,7 +132,11 @@ struct ChatSessionsView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openChatForCourse)) { _ in
-            Task { await reloadSessions() }
+            Task { await reloadSessions(force: true) }
+        }
+        .onChange(of: appState.selectedCourse?.id) { _ in
+            // When course changes, refresh sessions for the new course.
+            Task { await reloadSessions(force: true) }
         }
     }
 
@@ -129,8 +144,10 @@ struct ChatSessionsView: View {
 
     private var filteredSessions: [ChatSessionSummary] {
         guard let course = appState.selectedCourse else { return [] }
+
         // Only sessions that belong to this course
         let matching = appState.chatSessions.filter { $0.course_id == course.id }
+
         // Sort newest → oldest, then limit to 20
         let sorted = matching.sorted {
             sessionDate($0) ?? .distantPast > sessionDate($1) ?? .distantPast
@@ -145,11 +162,9 @@ struct ChatSessionsView: View {
 
     private var weekSections: [WeekSection] {
         guard let course = appState.selectedCourse else { return [] }
-
         let sessions = filteredSessions
         if sessions.isEmpty { return [] }
 
-        // Real week info (Web-accurate)
         let info = computeWeekInfo(
             startDateStr: course.start_date,
             endDateStr: course.end_date,
@@ -162,17 +177,13 @@ struct ChatSessionsView: View {
         }
 
         var buckets: [Int: [ChatSessionSummary]] = [:]
-        let calendar = Calendar.current
         let secondsPerWeek = 7.0 * 24.0 * 60.0 * 60.0
 
         for session in sessions {
-            // If we can't parse the session date, assume it was created "now"
             let d = sessionDate(session) ?? Date()
-
             let elapsed = d.timeIntervalSince(start) / secondsPerWeek
             var week = Int(floor(elapsed)) + 1
 
-            // Clamp into the real course week range
             if let total = info.totalWeeks {
                 week = min(total, max(1, week))
             }
@@ -185,95 +196,116 @@ struct ChatSessionsView: View {
             .sorted { $0.weekNumber > $1.weekNumber }
     }
 
-    private func sessionDate(_ session: ChatSessionSummary) -> Date? {
-        let value = session.started_at
-
-        let iso = ISO8601DateFormatter()
-        if let d = iso.date(from: value) {
-            return d
-        }
-
-        let df = DateFormatter()
-        df.locale = Locale(identifier: "en_US_POSIX")
-        let formats = [
-            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
-            "yyyy-MM-dd'T'HH:mm:ss",
-            "yyyy-MM-dd"
-        ]
-        for f in formats {
-            df.dateFormat = f
-            if let d = df.date(from: value) {
-                return d
-            }
-        }
-        return nil
-    }
-
-    private func parseCourseDate(_ value: String?) -> Date? {
-        guard let value = value else { return nil }
-
-        let iso = ISO8601DateFormatter()
-        if let d = iso.date(from: value) {
-            return d
-        }
-
-        let df = DateFormatter()
-        df.locale = Locale(identifier: "en_US_POSIX")
-        let formats = [
-            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
-            "yyyy-MM-dd'T'HH:mm:ss",
-            "yyyy-MM-dd"
-        ]
-        for f in formats {
-            df.dateFormat = f
-            if let d = df.date(from: value) {
-                return d
-            }
-        }
-        return nil
-    }
-
     // MARK: - Networking
 
-    private func reloadSessions() async {
-        guard let token = appState.accessToken else { return }
+    private func reloadSessions(force: Bool = false) async {
+        guard appState.isAuthenticated else { return }
+        guard appState.selectedCourse != nil else { return }
+
+        // Simple "do nothing" guard: if we already have sessions and not forcing, don't spam network.
+        if !force, !appState.chatSessions.isEmpty { return }
+
         isLoading = true
         error = nil
+        defer { isLoading = false }
+
         do {
-            let sessions = try await ChatService.listChatSessions(accessToken: token)
-            await MainActor.run {
-                appState.chatSessions = sessions
-            }
+            let sessions = try await ChatService.listChatSessions(limit: 50)
+            appState.chatSessions = sessions
         } catch {
-            await MainActor.run {
-                self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-        }
-        await MainActor.run {
-            isLoading = false
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     private func startNewChat() {
-        selectedSession = nil   // new conversation
+        selectedSession = nil
         showingDetail = true
     }
 
     private func rename(session: ChatSessionSummary, to newTitle: String) async {
-        guard let token = appState.accessToken else { return }
-        do {
-            try await ChatService.renameSession(sessionId: session.id, newTitle: newTitle, accessToken: token)
-            let sessions = try await ChatService.listChatSessions(accessToken: token)
-            await MainActor.run {
-                appState.chatSessions = sessions
-                sessionToRename = nil
-            }
-        } catch {
-            await MainActor.run {
-                // Could add an error toast here if you like
-                sessionToRename = nil
-            }
+        guard appState.isAuthenticated else {
+            sessionToRename = nil
+            return
         }
+
+        do {
+            try await ChatService.renameSession(sessionId: session.id, newTitle: newTitle)
+            let sessions = try await ChatService.listChatSessions(limit: 50)
+            appState.chatSessions = sessions
+            sessionToRename = nil
+        } catch {
+            // You can add a toast here later if desired.
+            sessionToRename = nil
+        }
+    }
+
+    // MARK: - Date parsing (file-local helpers to avoid duplicate symbols across files)
+
+    private func sessionDate(_ session: ChatSessionSummary) -> Date? {
+        let value = session.started_at
+        return parseCourseDate(value)
+    }
+
+    private func parseCourseDate(_ value: String?) -> Date? {
+        guard let value, !value.isEmpty else { return nil }
+
+        let iso = ISO8601DateFormatter()
+        if let d = iso.date(from: value) { return d }
+
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+
+        let formats = [
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd"
+        ]
+
+        for f in formats {
+            df.dateFormat = f
+            if let d = df.date(from: value) { return d }
+        }
+
+        return nil
+    }
+
+    private func computeWeekInfo(
+        startDateStr: String?,
+        endDateStr: String?,
+        graceDays: Int?
+    ) -> (hasSchedule: Bool, currentWeek: Int?, totalWeeks: Int?, progressPct: Double) {
+
+        guard let startStr = startDateStr,
+              let endStr = endDateStr,
+              let start = parseCourseDate(startStr),
+              let end = parseCourseDate(endStr)
+        else {
+            return (false, nil, nil, 0)
+        }
+
+        let grace = graceDays ?? 0
+        let cutoff = Calendar.current.date(byAdding: .day, value: grace, to: end) ?? end
+        let secondsPerWeek = 7.0 * 24.0 * 60.0 * 60.0
+
+        let totalWeeksRaw = cutoff.timeIntervalSince(start) / secondsPerWeek
+        let totalWeeks = max(1, Int(round(totalWeeksRaw)))
+
+        let today = Date()
+        var currentWeek: Int
+
+        if today < start {
+            currentWeek = 1
+        } else if today > cutoff {
+            currentWeek = totalWeeks
+        } else {
+            let elapsed = today.timeIntervalSince(start) / secondsPerWeek
+            currentWeek = Int(floor(elapsed)) + 1
+            currentWeek = min(totalWeeks, max(1, currentWeek))
+        }
+
+        let pct = min(100, max(0, (Double(currentWeek) / Double(totalWeeks)) * 100))
+
+        return (true, currentWeek, totalWeeks, pct)
     }
 }
 
@@ -283,11 +315,7 @@ struct ChatSessionRow: View {
     let session: ChatSessionSummary
 
     private var subtitle: String {
-        if let courseCode = session.course_code {
-            return courseCode
-        } else {
-            return ""
-        }
+        session.course_code ?? ""
     }
 
     private var reflectionStatusText: String? {
@@ -320,73 +348,4 @@ struct ChatSessionRow: View {
         }
         .padding(.vertical, 4)
     }
-}
-
-func computeWeekInfo(
-    startDateStr: String?,
-    endDateStr: String?,
-    graceDays: Int?
-) -> (hasSchedule: Bool, currentWeek: Int?, totalWeeks: Int?, progressPct: Double) {
-
-    guard let startStr = startDateStr,
-          let endStr = endDateStr,
-          let start = parseCourseDate(startStr),
-          let end = parseCourseDate(endStr)
-    else {
-        return (false, nil, nil, 0)
-    }
-
-    let grace = graceDays ?? 0
-
-    // cutoff = end + graceDays
-    let cutoff = Calendar.current.date(byAdding: .day, value: grace, to: end) ?? end
-
-    let secondsPerWeek = 7.0 * 24.0 * 60.0 * 60.0
-
-    // total weeks
-    let totalWeeksRaw = cutoff.timeIntervalSince(start) / secondsPerWeek
-    let totalWeeks = max(1, Int(round(totalWeeksRaw)))
-
-    let today = Date()
-    var currentWeek: Int
-
-    if today < start {
-        currentWeek = 1
-    } else if today > cutoff {
-        currentWeek = totalWeeks
-    } else {
-        let elapsed = today.timeIntervalSince(start) / secondsPerWeek
-        currentWeek = Int(floor(elapsed)) + 1
-        currentWeek = min(totalWeeks, max(1, currentWeek))
-    }
-
-    let pct = min(100, max(0, (Double(currentWeek) / Double(totalWeeks)) * 100))
-
-    return (true, currentWeek, totalWeeks, pct)
-}
-
-func parseCourseDate(_ value: String?) -> Date? {
-    guard let value = value else { return nil }
-
-    let iso = ISO8601DateFormatter()
-    if let d = iso.date(from: value) {
-        return d
-    }
-
-    let df = DateFormatter()
-    df.locale = Locale(identifier: "en_US_POSIX")
-
-    let formats = [
-        "yyyy-MM-dd'T'HH:mm:ssXXXXX",
-        "yyyy-MM-dd'T'HH:mm:ss",
-        "yyyy-MM-dd"
-    ]
-
-    for f in formats {
-        df.dateFormat = f
-        if let d = df.date(from: value) {
-            return d
-        }
-    }
-    return nil
 }

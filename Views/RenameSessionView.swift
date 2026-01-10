@@ -18,12 +18,22 @@ struct RenameSessionView: View {
         _titleText = State(initialValue: session.title ?? "")
     }
 
+    private var trimmed: String {
+        titleText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var resolvedTitle: String {
+        trimmed.isEmpty ? "Untitled conversation" : trimmed
+    }
+
     var body: some View {
         NavigationStack {
             Form {
-                Section(header: Text("Conversation title")) {
+                Section(header: Text("Conversation title"), footer: footer) {
                     TextField("Untitled conversation", text: $titleText)
                         .textInputAutocapitalization(.sentences)
+                        .submitLabel(.done)
+                        .onSubmit { save() }
                 }
             }
             .navigationTitle("Rename")
@@ -32,12 +42,19 @@ struct RenameSessionView: View {
                     Button("Cancel") { onCancel() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        let trimmed = titleText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        onSave(trimmed.isEmpty ? "Untitled conversation" : trimmed)
-                    }
+                    Button("Save") { save() }
+                        .disabled(titleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
+    }
+
+    private var footer: some View {
+        Text("This updates the title everywhere you use EduLens.")
+            .font(.footnote)
+    }
+
+    private func save() {
+        onSave(resolvedTitle)
     }
 }

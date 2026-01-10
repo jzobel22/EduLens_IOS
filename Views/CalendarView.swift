@@ -25,24 +25,30 @@ struct CalendarView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if appState.courses.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Calendar")
-                            .font(.title2.bold())
-                        Text("Once you’re enrolled in courses, EduLens will show a weekly calendar of upcoming assignments across your classes.")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                    }
-                    .padding(16)
+                if !appState.isAuthenticated {
+                    emptyState(
+                        title: "Calendar",
+                        subtitle: "Please sign in to view your weekly calendar."
+                    )
+                } else if appState.courses.isEmpty {
+                    emptyState(
+                        title: "Calendar",
+                        subtitle: "Once you’re enrolled in courses, EduLens will show a weekly calendar of upcoming assignments across your classes."
+                    )
                 } else {
                     content
                 }
             }
             .navigationTitle("Calendar")
         }
-        .onAppear {
-            Task { await loadAssignmentsForAllCourses() }
+        .task {
+            await loadAssignmentsForAllCourses(force: false)
+        }
+        .refreshable {
+            await loadAssignmentsForAllCourses(force: true)
+        }
+        .onChange(of: appState.courses.count) { _ in
+            Task { await loadAssignmentsForAllCourses(force: true) }
         }
         .sheet(isPresented: $showPlanSheet) {
             AssignmentPlanSheet(
@@ -54,6 +60,20 @@ struct CalendarView: View {
                 onClose: { showPlanSheet = false }
             )
         }
+    }
+
+    // MARK: - Empty state helper
+
+    private func emptyState(title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.title2.bold())
+            Text(subtitle)
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+            Spacer()
+        }
+        .padding(16)
     }
 
     // MARK: - Main content
@@ -133,9 +153,7 @@ struct CalendarView: View {
                             CalendarAssignmentRow(
                                 item: ca,
                                 brandColor: brandColor,
-                                onPlan: {
-                                    Task { await plan(for: ca) }
-                                }
+                                onPlan: { Task { await plan(for: ca) } }
                             )
                         }
                     }
@@ -171,9 +189,9 @@ struct CalendarView: View {
             return []
         }
 
-        return calendarAssignments.filter { ca in
-            (ca.dueDate >= dayStart) && (ca.dueDate < dayEnd)
-        }.sorted(by: { $0.dueDate < $1.dueDate })
+        return calendarAssignments
+            .filter { ca in (ca.dueDate >= dayStart) && (ca.dueDate < dayEnd) }
+            .sorted(by: { $0.dueDate < $1.dueDate })
     }
 
     private func isSameDay(_ a: Date, _ b: Date) -> Bool {
@@ -193,43 +211,44 @@ struct CalendarView: View {
         } else {
             let df = DateFormatter()
             df.dateFormat = "EEEE"
-            return df.string(from: date)   // e.g. "Wednesday"
+            return df.string(from: date)
         }
     }
 
     private func daySubtitle(_ date: Date) -> String {
         let df = DateFormatter()
         df.dateFormat = "MMM d"
-        return df.string(from: date)      // e.g. "Nov 26"
+        return df.string(from: date)
     }
 
     // MARK: - Loading assignments for all courses
 
-    private func loadAssignmentsForAllCourses() async {
-        guard let token = appState.accessToken else { return }
+    private func loadAssignmentsForAllCourses(force: Bool) async {
+        guard appState.isAuthenticated else { return }
         let courses = appState.courses
         if courses.isEmpty { return }
 
+        if !force, !calendarAssignments.isEmpty { return }
+
         isLoading = true
         loadError = nil
+        defer { isLoading = false }
 
         var aggregated: [CalendarAssignment] = []
         let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: Date())
+        let lastDay = calendar.date(byAdding: .day, value: daysAhead, to: startOfToday) ?? startOfToday
 
         do {
             for course in courses {
-                let resp = try await StudentService.fetchAssignments(
-                    courseId: course.id,
-                    accessToken: token
-                )
+                // Uses APIClient hooks now.
+                let resp = try await StudentService.fetchAssignments(courseId: course.id)
+
                 for a in resp.assignments {
                     guard let dueStr = a.due_at,
-                          let dueDate = parseCourseDate(dueStr) else {
+                          let dueDate = parseDate(dueStr) else {
                         continue
                     }
-
-                    let startOfToday = calendar.startOfDay(for: Date())
-                    guard let lastDay = calendar.date(byAdding: .day, value: daysAhead, to: startOfToday) else { continue }
 
                     if dueDate >= startOfToday && dueDate <= lastDay {
                         aggregated.append(
@@ -244,51 +263,80 @@ struct CalendarView: View {
                 }
             }
 
-            await MainActor.run {
-                calendarAssignments = aggregated
+            calendarAssignments = aggregated.sorted(by: { $0.dueDate < $1.dueDate })
+        } catch let apiErr as APIError {
+            switch apiErr {
+            case .httpError(let status, _, _):
+                if status == 404 || status == 403 {
+                    loadError = "Calendar assignments aren’t enabled for students yet.\n\n(Backend returned \(status). Once student LMS assignment access is enabled, this calendar will populate automatically.)"
+                } else if status == 401 {
+                    loadError = "Session expired. Please sign in again."
+                } else {
+                    loadError = apiErr.localizedDescription
+                }
+            default:
+                loadError = apiErr.localizedDescription
             }
         } catch {
-            await MainActor.run {
-                loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-        }
-
-        await MainActor.run {
-            isLoading = false
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     // MARK: - Plan from calendar
 
     private func plan(for item: CalendarAssignment) async {
-        guard let token = appState.accessToken else { return }
+        guard appState.isAuthenticated else { return }
 
-        await MainActor.run {
-            selectedAssignment = item
-            planText = nil
-            planError = nil
-            isPlanning = true
-            showPlanSheet = true
-        }
+        selectedAssignment = item
+        planText = nil
+        planError = nil
+        isPlanning = true
+        showPlanSheet = true
 
         do {
             let res = try await StudentService.generateAssignmentPlan(
                 courseId: item.course.id,
-                assignmentId: item.assignment.id,
-                accessToken: token
+                assignmentId: item.assignment.id
             )
-            await MainActor.run {
-                planText = res.plan_markdown
+            planText = res.plan_markdown
+        } catch let apiErr as APIError {
+            switch apiErr {
+            case .httpError(let status, _, _):
+                if status == 404 || status == 403 {
+                    planError = "Study plan generation isn’t enabled for students yet.\n\n(Backend returned \(status).)"
+                } else if status == 401 {
+                    planError = "Session expired. Please sign in again."
+                } else {
+                    planError = apiErr.localizedDescription
+                }
+            default:
+                planError = apiErr.localizedDescription
             }
         } catch {
-            await MainActor.run {
-                planError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
+            planError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
 
-        await MainActor.run {
-            isPlanning = false
+        isPlanning = false
+    }
+
+    // MARK: - File-local date parsing
+
+    private func parseDate(_ value: String) -> Date? {
+        let iso = ISO8601DateFormatter()
+        if let d = iso.date(from: value) { return d }
+
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        let formats = [
+            "yyyy-MM-dd'T'HH:mm:ssXXXXX",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd"
+        ]
+        for f in formats {
+            df.dateFormat = f
+            if let d = df.date(from: value) { return d }
         }
+        return nil
     }
 }
 
@@ -302,7 +350,7 @@ struct DayCardView: View {
 
     private var daySymbol: String {
         let df = DateFormatter()
-        df.dateFormat = "E"   // Mon, Tue, etc.
+        df.dateFormat = "E"
         return df.string(from: date)
     }
 
@@ -328,11 +376,10 @@ struct DayCardView: View {
                         .font(.caption2)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
-                        .padding(.horizontal, 4)   // slightly less padding
+                        .padding(.horizontal, 4)
                         .padding(.vertical, 3)
                         .background(
-                            Capsule()
-                                .fill(brandColor.opacity(0.8))
+                            Capsule().fill(brandColor.opacity(0.8))
                         )
                         .foregroundColor(.white)
                     Spacer()
@@ -345,7 +392,7 @@ struct DayCardView: View {
             }
         }
         .padding(10)
-        .frame(width: 80)   // a bit wider so "2 items" fits
+        .frame(width: 80)
         .background(
             RoundedRectangle(cornerRadius: 16)
                 .fill(isSelected ? brandColor.opacity(0.1) : Color(.systemBackground))
@@ -359,8 +406,6 @@ struct DayCardView: View {
         )
     }
 }
-
-
 
 // MARK: - Row for selected day
 
@@ -407,17 +452,12 @@ struct CalendarAssignmentRow: View {
             }
 
             HStack {
-                Button {
-                    onPlan()
-                } label: {
+                Button { onPlan() } label: {
                     Text("Plan work")
                         .font(.footnote.weight(.semibold))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(
-                            Capsule()
-                                .fill(brandColor.opacity(0.16))
-                        )
+                        .background(Capsule().fill(brandColor.opacity(0.16)))
                         .foregroundColor(brandColor)
                 }
                 Spacer()

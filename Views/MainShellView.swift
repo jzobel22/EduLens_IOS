@@ -36,7 +36,6 @@ enum MainSection: String, CaseIterable, Identifiable {
     }
 }
 
-
 struct MainShellView: View {
     @EnvironmentObject var appState: AppState
 
@@ -83,6 +82,7 @@ struct MainShellView: View {
         .task {
             await hydrateInitialContextIfNeeded()
         }
+        // From Dashboard course card
         .onReceive(NotificationCenter.default.publisher(for: .openChatForCourse)) { note in
             if let courseId = note.object as? String,
                let course = appState.courses.first(where: { $0.id == courseId }) {
@@ -93,6 +93,18 @@ struct MainShellView: View {
                 showMenu = false
             }
         }
+        // NEW: Live Class pill
+        .onReceive(NotificationCenter.default.publisher(for: .openLiveClassForCourse)) { note in
+            if let courseId = note.object as? String,
+               let course = appState.courses.first(where: { $0.id == courseId }) {
+                appState.selectedCourse = course
+            }
+            withAnimation(.easeOut(duration: 0.2)) {
+                section = .liveClass
+                showMenu = false
+            }
+        }
+        // From Dashboard course card
         .onReceive(NotificationCenter.default.publisher(for: .openAssignmentsForCourse)) { note in
             if let courseId = note.object as? String,
                let course = appState.courses.first(where: { $0.id == courseId }) {

@@ -302,11 +302,9 @@ struct TermProgressCard: View {
     }
 
     private func parseDate(_ value: String) -> Date? {
-        // First ISO8601 (common backend format)
         let iso = ISO8601DateFormatter()
         if let d = iso.date(from: value) { return d }
 
-        // Then common fallback formats
         let df = DateFormatter()
         df.locale = Locale(identifier: "en_US_POSIX")
 
@@ -356,21 +354,29 @@ struct CourseCard: View {
                 Button {
                     NotificationCenter.default.post(name: .openChatForCourse, object: course.id)
                 } label: {
-                    Text("Open chat")
+                    Text("Assistant")
                         .font(.footnote.weight(.semibold))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
-                        .background(
-                            Capsule()
-                                .fill(brandColor.opacity(0.16))
-                        )
+                        .background(Capsule().fill(brandColor.opacity(0.16)))
+                        .foregroundColor(brandColor)
+                }
+
+                Button {
+                    NotificationCenter.default.post(name: .openLiveClassForCourse, object: course.id)
+                } label: {
+                    Text("Live class")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(brandColor.opacity(0.16)))
                         .foregroundColor(brandColor)
                 }
 
                 Button {
                     NotificationCenter.default.post(name: .openAssignmentsForCourse, object: course.id)
                 } label: {
-                    Text("Open assignments")
+                    Text("Assignments")
                         .font(.footnote)
                         .foregroundColor(.primary)
                 }
@@ -454,4 +460,5 @@ struct CourseCard: View {
 extension Notification.Name {
     static let openChatForCourse = Notification.Name("EduLensOpenChatForCourse")
     static let openAssignmentsForCourse = Notification.Name("EduLensOpenAssignmentsForCourse")
+    static let openLiveClassForCourse = Notification.Name("EduLensOpenLiveClassForCourse")
 }

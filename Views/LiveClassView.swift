@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LiveClassView: View {
     @EnvironmentObject var appState: AppState
@@ -23,11 +24,25 @@ struct LiveClassView: View {
     @State private var useAIRecap: Bool = true
     @State private var recapMode: String = "mini"   // keep simple on mobile
 
+    // ✅ Stable keyboard dismissal via focus (toolbar won't disappear)
+    @FocusState private var scratchpadFocused: Bool
+
     private var brandColor: Color {
         Color(hex: appState.branding?.primary_color) ?? .accentColor
     }
 
     private var course: Course? { appState.selectedCourse }
+
+    private func isSameDay(_ a: Date, _ b: Date) -> Bool {
+        Calendar.current.isDate(a, inSameDayAs: b)
+    }
+
+    private func dayKey(_ d: Date) -> String {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.dateFormat = "yyyy-MM-dd"
+        return df.string(from: d)
+    }
 
     var body: some View {
         ScrollView {
@@ -72,11 +87,22 @@ struct LiveClassView: View {
             await reloadAll(force: false)
         }
         .onChange(of: appState.selectedCourse?.id) { _, _ in
+            scratchpadFocused = false
             Task { await reloadAll(force: true) }
         }
         .onChange(of: selectedDay) { _, _ in
+            scratchpadFocused = false
             Task { await reloadAll(force: true) }
         }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    scratchpadFocused = false
+                }
+            }
+        }
+
     }
 
     // MARK: - UI sections
@@ -92,22 +118,37 @@ struct LiveClassView: View {
     }
 
     private var dayStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(recentDays, id: \.self) { day in
-                    DayChip(
-                        date: day,
-                        isSelected: Calendar.current.isDate(day, inSameDayAs: selectedDay),
-                        brandColor: brandColor
-                    )
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.15)) {
-                            selectedDay = Calendar.current.startOfDay(for: day)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(recentDays, id: \.self) { day in
+                        DayChip(
+                            date: day,
+                            isSelected: isSameDay(day, selectedDay),
+                            brandColor: brandColor
+                        )
+                        .id(dayKey(day))
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                selectedDay = Calendar.current.startOfDay(for: day)
+                            }
                         }
                     }
                 }
+                .padding(.vertical, 4)
             }
-            .padding(.vertical, 4)
+            .onAppear {
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(dayKey(selectedDay), anchor: .center)
+                    }
+                }
+            }
+            .onChange(of: selectedDay) { _, newValue in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(dayKey(newValue), anchor: .center)
+                }
+            }
         }
     }
 
@@ -132,7 +173,6 @@ struct LiveClassView: View {
                 Label("\(unresolved) open confusion\(unresolved == 1 ? "" : "s")", systemImage: "questionmark.circle")
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(unresolved > 0 ? .orange : .secondary)
-
                 Spacer()
             }
 
@@ -163,8 +203,11 @@ struct LiveClassView: View {
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemBackground))
-            .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3))
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(.systemBackground))
+                .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3)
+        )
     }
 
     private var scratchpadCard: some View {
@@ -185,8 +228,12 @@ struct LiveClassView: View {
             TextEditor(text: $scratchpadText)
                 .frame(minHeight: 120)
                 .padding(10)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(.secondarySystemBackground)))
-                .onChange(of: scratchpadText) { _ in
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Color(.secondarySystemBackground))
+                )
+                .focused($scratchpadFocused)
+                .onChange(of: scratchpadText) { _, _ in
                     scheduleScratchpadSave()
                 }
 
@@ -195,8 +242,11 @@ struct LiveClassView: View {
                 .foregroundColor(.secondary)
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemBackground))
-            .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3))
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(.systemBackground))
+                .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3)
+        )
     }
 
     private var signalComposerCard: some View {
@@ -216,18 +266,33 @@ struct LiveClassView: View {
                 } label: {
                     HStack(spacing: 8) {
                         Image(systemName: newSignalType.systemImage)
+                            .imageScale(.small)
+
                         Text(newSignalType.label)
-                        Image(systemName: "chevron.down").font(.caption2)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .fixedSize(horizontal: true, vertical: false)
+
+                        Image(systemName: "chevron.down")
+                            .font(.caption2)
+                            .foregroundColor(brandColor.opacity(0.8))
                     }
                     .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 12).fill(brandColor.opacity(0.12)))
+                    .frame(minWidth: 132, alignment: .leading)   // prevents “Con-fused”
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(brandColor.opacity(0.12))
+                    )
                     .foregroundColor(brandColor)
                 }
 
                 TextField("Optional note…", text: $newSignalNote)
                     .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        Task { await createSignal() }
+                    }
 
                 Button {
                     Task { await createSignal() }
@@ -240,8 +305,11 @@ struct LiveClassView: View {
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemBackground))
-            .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3))
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(.systemBackground))
+                .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3)
+        )
     }
 
     private var signalsCard: some View {
@@ -275,8 +343,11 @@ struct LiveClassView: View {
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemBackground))
-            .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3))
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(.systemBackground))
+                .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3)
+        )
     }
 
     private var recapCard: some View {
@@ -329,7 +400,6 @@ struct LiveClassView: View {
                         .foregroundColor(recap.open_confusions > 0 ? .orange : .secondary)
                 }
                 .padding(.top, 4)
-
             } else {
                 Text("No recap yet. Capture notes and generate one when you’re ready.")
                     .font(.footnote)
@@ -337,8 +407,11 @@ struct LiveClassView: View {
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 18).fill(Color(.systemBackground))
-            .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3))
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(.systemBackground))
+                .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 3)
+        )
     }
 
     // MARK: - Derived
@@ -348,7 +421,6 @@ struct LiveClassView: View {
     }
 
     private var recentDays: [Date] {
-        // Today + previous 6 days
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
         return (0..<7).compactMap { offset in
@@ -364,8 +436,7 @@ struct LiveClassView: View {
     }
 
     private var signalsSorted: [LiveSignalOut] {
-        // newest first
-        return signals.sorted { $0.created_at > $1.created_at }
+        signals.sorted { $0.created_at > $1.created_at }
     }
 
     // MARK: - Networking
@@ -387,7 +458,6 @@ struct LiveClassView: View {
             recap = r
             context = c
 
-            // seed scratchpad from recap row (backend stores it there)
             scratchpadText = r?.scratchpad_text ?? ""
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -433,7 +503,11 @@ struct LiveClassView: View {
 
     private func setResolution(signal: LiveSignalOut, resolution: LiveResolutionState) async {
         do {
-            _ = try await LiveClassService.updateSignal(signalId: signal.id, resolution: resolution, note: signal.note_text)
+            _ = try await LiveClassService.updateSignal(
+                signalId: signal.id,
+                resolution: resolution,
+                note: signal.note_text
+            )
             await reloadSignalsOnly()
             if isTodaySelected { await reloadContextOnly() }
         } catch {
@@ -444,7 +518,6 @@ struct LiveClassView: View {
     private func scheduleScratchpadSave() {
         scratchpadSaveTask?.cancel()
         scratchpadSaveTask = Task { [scratchpadText] in
-            // mirror WebUI debounce (~900ms)
             try? await Task.sleep(nanoseconds: 900_000_000)
             await saveScratchpad(text: scratchpadText)
         }
@@ -457,7 +530,6 @@ struct LiveClassView: View {
         defer { isSavingScratchpad = false }
 
         do {
-            // backend returns recap row
             let updated = try await LiveClassService.saveScratchpad(
                 courseId: course.id,
                 sessionDate: sessionDateString,
@@ -465,7 +537,7 @@ struct LiveClassView: View {
             )
             recap = updated
         } catch {
-            // non-fatal, but you may want a subtle toast later
+            // non-fatal
         }
     }
 
@@ -473,11 +545,11 @@ struct LiveClassView: View {
         guard appState.isAuthenticated, let course = course else { return }
         guard !isGeneratingRecap else { return }
 
+        scratchpadFocused = false
         isGeneratingRecap = true
         defer { isGeneratingRecap = false }
 
         do {
-            // Flush scratchpad before generating recap (matches WebUI intent)
             _ = try? await LiveClassService.saveScratchpad(
                 courseId: course.id,
                 sessionDate: sessionDateString,
